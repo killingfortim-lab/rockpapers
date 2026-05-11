@@ -5,7 +5,6 @@ const { Server } = require('socket.io');
 const app = express();
 const server = http.createServer(app);
 
-// Разрешаем подключения с твоего сайта Beget
 const io = new Server(server, {
     cors: {
         origin: "*", 
@@ -18,14 +17,27 @@ app.use(express.static('public'));
 let adminId = null; 
 let users = {}; 
 let choices = { p1: null, p2: null };
-
-// ДОБАВЛЕНО: Переменная для хранения счета
 let scores = { p1: 0, p2: 0 }; 
+
+// Вспомогательная функция для сборки данных о счете и именах
+function getScoreData() {
+    let p1Name = "Игрок 1";
+    let p2Name = "Игрок 2";
+
+    for (let id in users) {
+        if (users[id].role === 'p1') p1Name = users[id].name;
+        if (users[id].role === 'p2') p2Name = users[id].name;
+    }
+
+    return {
+        p1: { name: p1Name, score: scores.p1 },
+        p2: { name: p2Name, score: scores.p2 }
+    };
+}
 
 io.on('connection', (socket) => {
     socket.emit('init', { adminExists: !!adminId });
-    // ДОБАВЛЕНО: При подключении сразу показываем текущий счет
-    socket.emit('update_score', scores); 
+    io.emit('update_score', getScoreData()); 
 
     socket.on('join_lobby', (data) => {
         const { nickname, asAdmin } = data;
@@ -41,6 +53,7 @@ io.on('connection', (socket) => {
         socket.emit('joined', users[socket.id].role);
         io.emit('status', `👋 ${nickname} вошел в лобби.`);
         broadcastLobby(); 
+        io.emit('update_score', getScoreData());
     });
 
     socket.on('assign_role', ({ targetId, role }) => {
@@ -55,18 +68,13 @@ io.on('connection', (socket) => {
 
         if (users[targetId]) {
             users[targetId].role = role;
-            
-            // ДОБАВЛЕНО: Сбрасываем счет до 0, если назначен новый игрок
-            if (role === 'p1' || role === 'p2') {
-                scores[role] = 0;
-                io.emit('update_score', scores);
-            }
-
+            scores[role] = 0; // Сброс счета при смене игрока
             io.to(targetId).emit('role_assigned', role);
             io.emit('status', `👑 Админ назначил ${users[targetId].name} как Игрок ${role === 'p1' ? '1' : '2'}`);
         }
         
         broadcastLobby();
+        io.emit('update_score', getScoreData()); // Синхронизируем имена в счетчике
     });
 
     socket.on('choice', (choice) => {
@@ -79,14 +87,9 @@ io.on('connection', (socket) => {
         io.emit('status', `⏳ ${user.name} сделал выбор...`);
 
         if (choices.p1 && choices.p2) {
-            let p1Name = "Игрок 1", p2Name = "Игрок 2";
-            for (let id in users) {
-                if (users[id].role === 'p1') p1Name = users[id].name;
-                if (users[id].role === 'p2') p2Name = users[id].name;
-            }
-
-            // ДОБАВЛЕНО: Логика начисления очков
+            const data = getScoreData();
             let resultText = '';
+
             if (choices.p1 === choices.p2) {
                 resultText = 'Ничья! 🤝';
             } else if (
@@ -94,47 +97,45 @@ io.on('connection', (socket) => {
                 (choices.p1 === 'scissors' && choices.p2 === 'paper') ||
                 (choices.p1 === 'paper' && choices.p2 === 'rock')
             ) {
-                resultText = `🎉 Победил(а) ${p1Name}!`;
-                scores.p1++; // Плюс балл Игроку 1
+                resultText = `🎉 Победил(а) ${data.p1.name}!`;
+                scores.p1++;
             } else {
-                resultText = `🎉 Победил(а) ${p2Name}!`;
-                scores.p2++; // Плюс балл Игроку 2
+                resultText = `🎉 Победил(а) ${data.p2.name}!`;
+                scores.p2++;
             }
 
             io.emit('result', { 
-                p1: choices.p1, 
-                p2: choices.p2, 
-                p1Name, p2Name, result: resultText 
+                p1: choices.p1, p2: choices.p2, 
+                p1Name: data.p1.name, p2Name: data.p2.name, 
+                result: resultText 
             });
             
-            // ДОБАВЛЕНО: Рассылаем обновленный счет всем
-            io.emit('update_score', scores); 
-            
+            io.emit('update_score', getScoreData()); 
             choices = { p1: null, p2: null }; 
         }
     });
 
     socket.on('disconnect', () => {
         if (users[socket.id]) {
+            const role = users[socket.id].role;
             io.emit('status', `🚪 ${users[socket.id].name} покинул игру.`);
             delete users[socket.id];
+            if (role === 'p1' || role === 'p2') {
+                scores[role] = 0;
+            }
         }
         if (socket.id === adminId) {
             adminId = null; 
             io.emit('init', { adminExists: false });
-            io.emit('status', '⚠️ Админ покинул игру. Требуется новый хост.');
         }
         broadcastLobby();
+        io.emit('update_score', getScoreData());
     });
 
     function broadcastLobby() {
-        if (adminId) {
-            io.to(adminId).emit('lobby_users', users);
-        }
+        if (adminId) io.to(adminId).emit('lobby_users', users);
     }
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-    console.log(`Сервер запущен на порту ${PORT}`);
-});
+server.listen(PORT, () => console.log(`Сервер запущен`));
